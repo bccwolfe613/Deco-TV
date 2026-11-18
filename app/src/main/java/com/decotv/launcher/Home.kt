@@ -315,8 +315,8 @@ fun DecoHome(apps: List<TvApp>, favorites: List<String>, onFavoritesChange: (Lis
 
             AnimatedVisibility(
                 visible = drawerOpen,
-                enter = slideInVertically(tween(260)) { it / 3 } + fadeIn(tween(200)),
-                exit = slideOutVertically(tween(220)) { it / 3 } + fadeOut(tween(180)),
+                enter = slideInVertically(tween(200)) { it / 6 } + fadeIn(tween(160)),
+                exit = fadeOut(tween(140)),
             ) {
                 AllAppsDrawer(
                     apps = apps,
@@ -632,7 +632,7 @@ private fun TileFrame(
         modifier
             .zIndex(if (focused) 1f else 0f)
             .graphicsLayer { scaleX = grow; scaleY = grow }
-            .shadow(if (focused) s.dp(18f) else s.dp(4f), shape, ambientColor = Color.Black, spotColor = if (focused) Gold else Color.Black)
+            .let { if (focused) it.shadow(s.dp(18f), shape, ambientColor = Color.Black, spotColor = Gold) else it }
             .clip(shape)
             .background(if (dashed) Color.White.copy(alpha = if (focused) 0.12f else 0.05f) else Color(0xFF16181D))
             .border(
@@ -701,9 +701,9 @@ private fun AllAppsDrawer(
                 }
                 .focusProperties { exit = { FocusRequester.Cancel } }
                 .focusGroup()
-                .shadow(s.dp(30f), box, ambientColor = Color.Black, spotColor = Color.Black)
-                .glass(box, Color.Black.copy(alpha = 0.40f), 0.14f)
-                .border(1.dp, Color.White.copy(alpha = 0.18f), box)
+                .clip(box)
+                .background(Color(0xFF050505))
+                .border(1.dp, Gold.copy(alpha = 0.45f), box)
                 .padding(start = s.dp(34f), end = s.dp(34f), top = s.dp(26f)),
         ) {
             Row(verticalAlignment = Alignment.Bottom) {
