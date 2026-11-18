@@ -342,9 +342,28 @@ private fun GlassButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    // Only a press that starts on this button counts. That way, letting go of a long
+    // press that opened a menu doesn't "click" the first button in that menu.
+    var armed by remember { mutableStateOf(false) }
     Row(
         modifier
             .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
+            .onPreviewKeyEvent { e ->
+                val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
+                when {
+                    !ok -> false
+                    e.type == KeyEventType.KeyDown -> {
+                        if (e.nativeKeyEvent.repeatCount == 0) armed = true
+                        true
+                    }
+                    e.type == KeyEventType.KeyUp -> {
+                        if (armed) onClick()
+                        armed = false
+                        true
+                    }
+                    else -> false
+                }
+            }
             .glass(shape, if (focused) Gold.copy(alpha = 0.24f) else Color.Black.copy(alpha = 0.12f), if (focused) 0.30f else 0.12f)
             .border(if (focused) 1.5.dp else 1.dp, if (focused) Gold else Color.White.copy(alpha = 0.16f), shape)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
