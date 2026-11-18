@@ -1,14 +1,21 @@
 package com.decotv.launcher
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -18,20 +25,25 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,7 +64,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.nativeKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -71,10 +94,9 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Locale
 
 /* ---------- scaling: the design was drawn on a 1280 x 720 screen ---------- */
 
@@ -134,15 +156,17 @@ fun Modifier.glass(shape: Shape, tint: Color, highlight: Float = 0.13f): Modifie
 
 /* ---------- dialogs ---------- */
 
-sealed class Panel {
-    data class Info(val title: String, val body: String) : Panel()
-    data class Inputs(val inputs: List<TvInput>) : Panel()
-}
+
+/* ---------- pop-up panels ---------- */
+
+data class PanelButtonSpec(val label: String, val action: () -> Unit)
+
+data class Panel(val title: String, val body: String?, val buttons: List<PanelButtonSpec>)
 
 /* ---------- home screen ---------- */
 
 @Composable
-fun DecoHome(apps: List<TvApp>) {
+fun DecoHome(apps: List<TvApp>, favorites: List<String>, onFavoritesChange: (List<String>) -> Unit) {
     val context = LocalContext.current
     val config = LocalConfiguration.current
     val density = LocalDensity.current
@@ -161,10 +185,59 @@ fun DecoHome(apps: List<TvApp>) {
 
     var rootSize by remember { mutableStateOf(IntSize.Zero) }
     var panel by remember { mutableStateOf<Panel?>(null) }
-    var focusedApp by remember { mutableStateOf<TvApp?>(null) }
+    var drawerOpen by remember { mutableStateOf(false) }
+    val dockFocus = remember { FocusRequester() }
+    var dockFocusedOnce by remember { mutableStateOf(false) }
+
+    val byPackage = apps.associateBy { it.packageName }
+    val favApps = favorites.mapNotNull { byPackage[it] }
 
     BackHandler(enabled = panel != null) { panel = null }
-    BackHandler(enabled = panel == null) { /* already home: stay here */ }
+    BackHandler(enabled = panel == null && drawerOpen) { drawerOpen = false }
+    BackHandler(enabled = panel == null && !drawerOpen) { /* already home: stay here */ }
+
+    // First focus lands on the dock once apps have loaded; it returns there when the drawer closes.
+    LaunchedEffect(favApps.isNotEmpty(), drawerOpen, panel == null) {
+        if (!drawerOpen && panel == null && (favApps.isNotEmpty() || apps.isNotEmpty())) {
+            delay(if (dockFocusedOnce) 60 else 200)
+            runCatching { dockFocus.requestFocus() }
+            dockFocusedOnce = true
+        }
+    }
+
+    fun info(title: String, body: String) {
+        panel = Panel(title, body, listOf(PanelButtonSpec("OK") { panel = null }))
+    }
+
+    fun appOptions(app: TvApp) {
+        val index = favorites.indexOf(app.packageName)
+        val buttons = mutableListOf(PanelButtonSpec("Open") { panel = null; Apps.launch(context, app) })
+        var body: String? = null
+        if (index >= 0) {
+            buttons += PanelButtonSpec("Remove from favorites") {
+                panel = null
+                onFavoritesChange(favorites - app.packageName)
+            }
+            if (index > 0) buttons += PanelButtonSpec("Move left") {
+                panel = null
+                onFavoritesChange(favorites.toMutableList().apply { add(index - 1, removeAt(index)) })
+            }
+            if (index < favorites.size - 1) buttons += PanelButtonSpec("Move right") {
+                panel = null
+                onFavoritesChange(favorites.toMutableList().apply { add(index + 1, removeAt(index)) })
+            }
+        } else if (favApps.size < Favorites.MAX) {
+            buttons += PanelButtonSpec("Add to favorites") {
+                panel = null
+                drawerOpen = false
+                onFavoritesChange(favorites.filter { it in byPackage } + app.packageName)
+            }
+        } else {
+            body = "Your dock holds ${Favorites.MAX} apps. Remove one from the dock first, then add this one."
+        }
+        buttons += PanelButtonSpec("Close") { panel = null }
+        panel = Panel(app.label, body, buttons)
+    }
 
     val blur = ImageBitmap.imageResource(theme.blurred)
     val glass = remember(blur, rootSize) { GlassSource(blur, rootSize) }
@@ -189,11 +262,11 @@ fun DecoHome(apps: List<TvApp>) {
                 )
             }
 
-            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
                 TopBar(
                     clock = android.text.format.DateFormat.getTimeFormat(context).format(now.time),
                     onCast = {
-                        panel = Panel.Info(
+                        info(
                             "Cast to this TV",
                             "Chromecast is built in and always on. On your phone, open a Cast-enabled app, " +
                                 "tap the Cast icon and choose “${Actions.deviceName(context)}”.",
@@ -201,7 +274,7 @@ fun DecoHome(apps: List<TvApp>) {
                     },
                     onMirror = {
                         if (!Actions.openMirroring(context)) {
-                            panel = Panel.Info(
+                            info(
                                 "Mirror your screen",
                                 "On your Galaxy, open Quick Settings, tap Smart View and choose " +
                                     "“${Actions.deviceName(context)}”. This TV mirrors through Google Cast.",
@@ -210,10 +283,18 @@ fun DecoHome(apps: List<TvApp>) {
                     },
                     onInputs = {
                         val list = Actions.inputs(context)
-                        panel = if (list.isEmpty()) Panel.Info(
-                            "Inputs",
-                            "This TV doesn’t list its HDMI inputs to other apps. Use the Input button on your remote.",
-                        ) else Panel.Inputs(list)
+                        if (list.isEmpty()) {
+                            info("Inputs", "This TV doesn’t list its HDMI inputs to other apps. Use the Input button on your remote.")
+                        } else {
+                            panel = Panel("Inputs", null, list.map { input ->
+                                PanelButtonSpec(input.label) {
+                                    panel = null
+                                    if (!Actions.switchToInput(context, input)) {
+                                        info("Inputs", "Couldn’t switch to ${input.label}. Use the Input button on your remote.")
+                                    }
+                                }
+                            } + PanelButtonSpec("Close") { panel = null })
+                        }
                     },
                     onWifi = { Actions.openWifi(context) },
                     onSettings = { Actions.openSettings(context) },
@@ -221,27 +302,37 @@ fun DecoHome(apps: List<TvApp>) {
 
                 Spacer(Modifier.weight(1f))
 
-                BottomShelf(
-                    apps = apps,
-                    date = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(now.time),
-                    focusedLabel = focusedApp?.label ?: "",
-                    onFocusApp = { focusedApp = it },
+                Dock(
+                    apps = favApps,
+                    firstFocus = dockFocus,
+                    enabled = !drawerOpen && panel == null,
                     onOpen = { Apps.launch(context, it) },
+                    onOptions = { appOptions(it) },
+                    onAdd = { drawerOpen = true },
+                    onDown = { drawerOpen = true },
+                )
+                AllAppsHint()
+            }
+
+            AnimatedVisibility(
+                visible = drawerOpen,
+                enter = slideInVertically(tween(260)) { it / 3 } + fadeIn(tween(200)),
+                exit = slideOutVertically(tween(220)) { it / 3 } + fadeOut(tween(180)),
+            ) {
+                AllAppsDrawer(
+                    apps = apps,
+                    favorites = favorites.toSet(),
+                    enabled = panel == null,
+                    onClose = { drawerOpen = false },
+                    onOpen = { Apps.launch(context, it) },
+                    onOptions = { appOptions(it) },
                 )
             }
 
-            panel?.let { p ->
-                PanelOverlay(p, onClose = { panel = null }, onPickInput = {
-                    panel = null
-                    if (!Actions.switchToInput(context, it)) {
-                        panel = Panel.Info("Inputs", "Couldn’t switch to ${it.label}. Use the Input button on your remote.")
-                    }
-                })
-            }
+            panel?.let { PanelOverlay(it) }
         }
     }
 }
-
 @Composable
 private fun GlassButton(
     onClick: () -> Unit,
@@ -355,115 +446,291 @@ private fun RoundIcon(icon: Int, onClick: () -> Unit) {
     }
 }
 
+
+/* ---------- dock: the five favorites in one glass box ---------- */
+
 @Composable
-private fun BottomShelf(
+private fun Dock(
     apps: List<TvApp>,
-    date: String,
-    focusedLabel: String,
-    onFocusApp: (TvApp) -> Unit,
+    firstFocus: FocusRequester,
+    enabled: Boolean,
     onOpen: (TvApp) -> Unit,
+    onOptions: (TvApp) -> Unit,
+    onAdd: () -> Unit,
+    onDown: () -> Unit,
 ) {
     val s = LocalScale.current
-    val theme = LocalTheme.current
-    val first = remember { FocusRequester() }
-    var focusedOnce by remember { mutableStateOf(false) }
-    LaunchedEffect(apps.isNotEmpty()) {
-        if (apps.isNotEmpty() && !focusedOnce) {
-            delay(150)
-            runCatching { first.requestFocus() }
-            focusedOnce = true
-        }
-    }
-
-    Column(Modifier.padding(bottom = s.dp(26f))) {
-        Row(
-            Modifier.padding(horizontal = s.dp(56f)),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            Text("TODAY", style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(13f), letterSpacing = s.sp(6f), color = Gold))
-            Spacer(Modifier.width(s.dp(18f)))
-            Text(date, style = TextStyle(fontFamily = theme.font, fontSize = s.sp(30f), letterSpacing = s.sp(3f), color = theme.cream))
-            Spacer(Modifier.width(s.dp(18f)))
-            Text(
-                focusedLabel,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(15f), letterSpacing = s.sp(2f), color = theme.muted),
+    val box = RoundedCornerShape(s.dp(28f))
+    Row(
+        Modifier
+            .onPreviewKeyEvent { e ->
+                if (enabled && e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown) {
+                    onDown(); true
+                } else false
+            }
+            .shadow(s.dp(24f), box, ambientColor = Color.Black, spotColor = Color.Black)
+            .glass(box, Color.Black.copy(alpha = 0.16f), 0.16f)
+            .border(1.dp, Color.White.copy(alpha = 0.18f), box)
+            .padding(horizontal = s.dp(24f), vertical = s.dp(20f)),
+        horizontalArrangement = Arrangement.spacedBy(s.dp(20f)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        apps.forEachIndexed { i, app ->
+            AppTile(
+                app = app,
+                modifier = Modifier.width(s.dp(200f)).height(s.dp(112.5f)),
+                focusRequester = if (i == 0) firstFocus else null,
+                canFocus = enabled,
+                onClick = { onOpen(app) },
+                onOptions = { onOptions(app) },
             )
         }
-        Spacer(Modifier.height(s.dp(8f)))
-        LazyRow(
-            modifier = Modifier.fillMaxWidth().height(s.dp(150f)),
-            contentPadding = PaddingValues(horizontal = s.dp(56f)),
-            horizontalArrangement = Arrangement.spacedBy(s.dp(22f)),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            itemsIndexed(apps, key = { _, a -> a.packageName }) { i, app ->
-                AppTile(
-                    app = app,
-                    modifier = if (i == 0) Modifier.focusRequester(first) else Modifier,
-                    onFocused = { onFocusApp(app) },
-                    onClick = { onOpen(app) },
-                )
-            }
+        repeat(Favorites.MAX - apps.size) { i ->
+            AddTile(
+                modifier = Modifier.width(s.dp(200f)).height(s.dp(112.5f)),
+                focusRequester = if (apps.isEmpty() && i == 0) firstFocus else null,
+                canFocus = enabled,
+                onClick = onAdd,
+            )
         }
     }
 }
 
 @Composable
-private fun AppTile(app: TvApp, modifier: Modifier, onFocused: () -> Unit, onClick: () -> Unit) {
+private fun AllAppsHint() {
     val s = LocalScale.current
     val theme = LocalTheme.current
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    LaunchedEffect(focused) { if (focused) onFocused() }
-
-    val w by animateDpAsState(if (focused) s.dp(208f) else s.dp(168f), tween(180), label = "w")
-    val h by animateDpAsState(if (focused) s.dp(117f) else s.dp(95f), tween(180), label = "h")
-    val outer = RoundedCornerShape(s.dp(if (focused) 14f else 12f))
-    val inner = RoundedCornerShape(s.dp(if (focused) 10f else 8f))
-
-    Box(
-        modifier
-            .width(w)
-            .height(h)
-            .shadow(if (focused) s.dp(22f) else s.dp(10f), outer, ambientColor = Color.Black, spotColor = if (focused) Gold else Color.Black)
-            .glass(outer, if (focused) Gold.copy(alpha = 0.22f) else theme.glassTint, if (focused) 0.30f else 0.13f)
-            .border(if (focused) 1.5.dp else 1.dp, if (focused) Gold else Color.White.copy(alpha = 0.16f), outer)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(s.dp(5f)),
-        contentAlignment = Alignment.Center,
+    Row(
+        Modifier.padding(top = s.dp(10f), bottom = s.dp(18f)),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Canvas(Modifier.size(s.dp(14f), s.dp(9f))) {
+            val p = Path().apply {
+                moveTo(size.width * 0.1f, size.height * 0.2f)
+                lineTo(size.width * 0.5f, size.height * 0.8f)
+                lineTo(size.width * 0.9f, size.height * 0.2f)
+            }
+            drawPath(p, Gold, style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+        Spacer(Modifier.width(s.dp(10f)))
+        Text(
+            "ALL APPS",
+            style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(12f), letterSpacing = s.sp(5f), color = theme.muted),
+        )
+    }
+}
+
+/* ---------- one app: OK opens it, hold OK (or Menu) for options ---------- */
+
+@Composable
+private fun AppTile(
+    app: TvApp,
+    modifier: Modifier,
+    focusRequester: FocusRequester?,
+    canFocus: Boolean,
+    onClick: () -> Unit,
+    onOptions: () -> Unit,
+    onFocused: (() -> Unit)? = null,
+    badge: Boolean = false,
+) {
+    TileFrame(modifier, focusRequester, canFocus, onClick, onOptions, onFocused) { focused ->
+        val s = LocalScale.current
+        val theme = LocalTheme.current
         if (app.hasRealBanner) {
             Image(
                 bitmap = app.banner,
                 contentDescription = app.label,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().clip(inner),
+                modifier = Modifier.fillMaxSize(),
             )
         } else {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Image(bitmap = app.banner, contentDescription = null, modifier = Modifier.size(s.dp(if (focused) 46f else 38f)))
+            Column(
+                Modifier.fillMaxSize().background(Color(0xFF16181D)),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Image(bitmap = app.banner, contentDescription = null, modifier = Modifier.size(s.dp(40f)))
                 Spacer(Modifier.height(s.dp(6f)))
                 Text(
                     app.label.uppercase(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = s.dp(8f)),
                     style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(12f), letterSpacing = s.sp(2f), color = theme.cream),
                 )
+            }
+        }
+        if (badge) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(s.dp(7f))
+                    .size(s.dp(10f))
+                    .background(Gold, CircleShape)
+                    .border(1.dp, Color.Black.copy(alpha = 0.5f), CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AddTile(modifier: Modifier, focusRequester: FocusRequester?, canFocus: Boolean, onClick: () -> Unit) {
+    TileFrame(modifier, focusRequester, canFocus, onClick, onClick, null, dashed = true) { focused ->
+        val s = LocalScale.current
+        Column(
+            Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text("+", style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(34f), color = if (focused) GoldLight else Gold))
+            Text(
+                "ADD APP",
+                style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(11f), letterSpacing = s.sp(3f), color = LocalTheme.current.muted),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TileFrame(
+    modifier: Modifier,
+    focusRequester: FocusRequester?,
+    canFocus: Boolean,
+    onClick: () -> Unit,
+    onOptions: () -> Unit,
+    onFocused: (() -> Unit)?,
+    dashed: Boolean = false,
+    content: @Composable androidx.compose.foundation.layout.BoxScope.(focused: Boolean) -> Unit,
+) {
+    val s = LocalScale.current
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    LaunchedEffect(focused) { if (focused) onFocused?.invoke() }
+    val grow by animateFloatAsState(if (focused) 1.10f else 1f, tween(160), label = "grow")
+    var held by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(s.dp(12f))
+
+    Box(
+        modifier
+            .zIndex(if (focused) 1f else 0f)
+            .graphicsLayer { scaleX = grow; scaleY = grow }
+            .shadow(if (focused) s.dp(18f) else s.dp(4f), shape, ambientColor = Color.Black, spotColor = if (focused) Gold else Color.Black)
+            .clip(shape)
+            .background(if (dashed) Color.White.copy(alpha = if (focused) 0.12f else 0.05f) else Color(0xFF16181D))
+            .border(
+                if (focused) 2.dp else 1.dp,
+                if (focused) Gold else Color.White.copy(alpha = if (dashed) 0.28f else 0.12f),
+                shape,
+            )
+            .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
+            .focusProperties { this.canFocus = canFocus }
+            .onPreviewKeyEvent { e ->
+                val ok = e.key == Key.DirectionCenter || e.key == Key.Enter || e.key == Key.NumPadEnter
+                when {
+                    e.key == Key.Menu && e.type == KeyEventType.KeyDown -> { onOptions(); true }
+                    !ok -> false
+                    e.type == KeyEventType.KeyDown -> {
+                        val repeats = e.nativeKeyEvent.repeatCount
+                        if (repeats == 0) held = false
+                        if (repeats >= 1 && !held) { held = true; onOptions() }
+                        true
+                    }
+                    e.type == KeyEventType.KeyUp -> {
+                        if (!held) onClick()
+                        held = false
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+    ) { content(focused) }
+}
+
+/* ---------- all apps: slides up when you press Down on the dock ---------- */
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun AllAppsDrawer(
+    apps: List<TvApp>,
+    favorites: Set<String>,
+    enabled: Boolean,
+    onClose: () -> Unit,
+    onOpen: (TvApp) -> Unit,
+    onOptions: (TvApp) -> Unit,
+) {
+    val s = LocalScale.current
+    val theme = LocalTheme.current
+    val cols = 5
+    val first = remember { FocusRequester() }
+    var focusedIndex by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { first.requestFocus() }
+    }
+    val box = RoundedCornerShape(topStart = s.dp(28f), topEnd = s.dp(28f), bottomStart = s.dp(28f), bottomEnd = s.dp(28f))
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Column(
+            Modifier
+                .padding(start = s.dp(32f), end = s.dp(32f), bottom = s.dp(22f))
+                .fillMaxWidth()
+                .fillMaxHeight(0.80f)
+                .onPreviewKeyEvent { e ->
+                    if (enabled && e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp && focusedIndex < cols) {
+                        onClose(); true
+                    } else false
+                }
+                .focusProperties { exit = { FocusRequester.Cancel } }
+                .focusGroup()
+                .shadow(s.dp(30f), box, ambientColor = Color.Black, spotColor = Color.Black)
+                .glass(box, Color.Black.copy(alpha = 0.40f), 0.14f)
+                .border(1.dp, Color.White.copy(alpha = 0.18f), box)
+                .padding(start = s.dp(34f), end = s.dp(34f), top = s.dp(26f)),
+        ) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("All Apps", style = TextStyle(fontFamily = theme.font, fontSize = s.sp(28f), letterSpacing = s.sp(3f), color = Gold))
+                Spacer(Modifier.width(s.dp(20f)))
+                Text(
+                    "Hold OK on an app to add it to your dock",
+                    style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(14f), letterSpacing = s.sp(1f), color = theme.muted),
+                )
+            }
+            Spacer(Modifier.height(s.dp(12f)))
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(cols),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = s.dp(16f), horizontal = s.dp(12f)),
+                horizontalArrangement = Arrangement.spacedBy(s.dp(28f)),
+                verticalArrangement = Arrangement.spacedBy(s.dp(28f)),
+            ) {
+                itemsIndexed(apps, key = { _, a -> a.packageName }) { i, app ->
+                    AppTile(
+                        app = app,
+                        modifier = Modifier.aspectRatio(16f / 9f),
+                        focusRequester = if (i == 0) first else null,
+                        canFocus = enabled,
+                        onClick = { onOpen(app) },
+                        onOptions = { onOptions(app) },
+                        onFocused = { focusedIndex = i },
+                        badge = app.packageName in favorites,
+                    )
+                }
             }
         }
     }
 }
 
+/* ---------- pop-up panel ---------- */
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun PanelOverlay(panel: Panel, onClose: () -> Unit, onPickInput: (TvInput) -> Unit) {
+private fun PanelOverlay(panel: Panel) {
     val s = LocalScale.current
     val theme = LocalTheme.current
     val firstButton = remember { FocusRequester() }
     LaunchedEffect(panel) {
-        delay(50)
+        delay(60)
         runCatching { firstButton.requestFocus() }
     }
     val card = RoundedCornerShape(s.dp(24f))
@@ -473,31 +740,27 @@ private fun PanelOverlay(panel: Panel, onClose: () -> Unit, onPickInput: (TvInpu
     ) {
         Column(
             Modifier
-                .width(s.dp(560f))
+                .width(s.dp(520f))
                 .focusProperties { exit = { FocusRequester.Cancel } }
                 .focusGroup()
                 .shadow(s.dp(30f), card)
-                .glass(card, Color.Black.copy(alpha = 0.35f), 0.14f)
+                .glass(card, Color.Black.copy(alpha = 0.40f), 0.14f)
                 .border(1.dp, Gold.copy(alpha = 0.6f), card)
-                .padding(s.dp(34f)),
-            verticalArrangement = Arrangement.spacedBy(s.dp(14f)),
+                .padding(s.dp(32f)),
+            verticalArrangement = Arrangement.spacedBy(s.dp(12f)),
         ) {
-            val title = when (panel) {
-                is Panel.Info -> panel.title
-                is Panel.Inputs -> "Inputs"
+            Text(
+                panel.title,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(fontFamily = theme.font, fontSize = s.sp(28f), letterSpacing = s.sp(2f), color = Gold),
+            )
+            panel.body?.let {
+                Text(it, style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(17f), lineHeight = s.sp(25f), color = theme.cream))
             }
-            Text(title, style = TextStyle(fontFamily = theme.font, fontSize = s.sp(30f), letterSpacing = s.sp(2f), color = Gold))
-            when (panel) {
-                is Panel.Info -> {
-                    Text(panel.body, style = TextStyle(fontFamily = BodyFont, fontSize = s.sp(18f), lineHeight = s.sp(26f), color = theme.cream))
-                    PanelButton("OK", onClose, firstButton)
-                }
-                is Panel.Inputs -> {
-                    panel.inputs.forEachIndexed { i, input ->
-                        PanelButton(input.label, { onPickInput(input) }, if (i == 0) firstButton else null)
-                    }
-                    PanelButton("Close", onClose, null)
-                }
+            Spacer(Modifier.height(s.dp(4f)))
+            panel.buttons.forEachIndexed { i, b ->
+                PanelButton(b.label, b.action, if (i == 0) firstButton else null)
             }
         }
     }
@@ -509,13 +772,13 @@ private fun PanelButton(label: String, onClick: () -> Unit, focusRequester: Focu
     GlassButton(
         onClick = onClick,
         shape = RoundedCornerShape(s.dp(24f)),
-        modifier = Modifier.fillMaxWidth().height(s.dp(48f)),
+        modifier = Modifier.fillMaxWidth().height(s.dp(46f)),
         focusRequester = focusRequester,
     ) { focused ->
         Text(
             label.uppercase(),
             style = TextStyle(
-                fontFamily = BodyFont, fontWeight = FontWeight.SemiBold, fontSize = s.sp(15f),
+                fontFamily = BodyFont, fontWeight = FontWeight.SemiBold, fontSize = s.sp(14f),
                 letterSpacing = s.sp(4f), color = if (focused) Color.White else LocalTheme.current.cream,
             ),
         )

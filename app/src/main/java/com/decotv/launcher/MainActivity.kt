@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     private val apps = mutableStateOf<List<TvApp>>(emptyList())
+    private val favorites = mutableStateOf<List<String>?>(null)
     private val scope = MainScope()
 
     private val packageReceiver = object : BroadcastReceiver() {
@@ -34,6 +35,8 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
+        favorites.value = Favorites.load(this)
+
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
             addAction(Intent.ACTION_PACKAGE_REMOVED)
@@ -42,7 +45,17 @@ class MainActivity : ComponentActivity() {
         }
         ContextCompat.registerReceiver(this, packageReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
 
-        setContent { DecoHome(apps = apps.value) }
+        setContent {
+            DecoHome(
+                apps = apps.value,
+                favorites = favorites.value ?: emptyList(),
+                onFavoritesChange = { updated ->
+                    val list = updated.distinct().take(Favorites.MAX)
+                    favorites.value = list
+                    Favorites.save(this, list)
+                },
+            )
+        }
     }
 
     override fun onResume() {
@@ -57,7 +70,13 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshApps() {
         scope.launch {
-            apps.value = withContext(Dispatchers.Default) { Apps.load(this@MainActivity) }
+            val loaded = withContext(Dispatchers.Default) { Apps.load(this@MainActivity) }
+            apps.value = loaded
+            if (favorites.value == null && loaded.isNotEmpty()) {
+                val defaults = Favorites.defaults(loaded)
+                favorites.value = defaults
+                Favorites.save(this@MainActivity, defaults)
+            }
         }
     }
 }

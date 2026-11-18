@@ -32,12 +32,12 @@ enum class TimeTheme(
     ),
     AFTERNOON(
         "Good Afternoon", R.drawable.bg_afternoon, R.drawable.bg_afternoon_blur,
-        FontFamily(Font(R.font.poiret_one)),
+        FontFamily(Font(R.font.federo)),
         Color(0x1F3CA078), Color(0xFFF1E6CC), Color(0xFFC9D2C4),
     ),
     EVENING(
         "Good Evening", R.drawable.bg_evening, R.drawable.bg_evening_blur,
-        FontFamily(Font(R.font.limelight)),
+        FontFamily(Font(R.font.federo)),
         Color(0x1AD4AF6A), Color(0xFFF3E9D2), Color(0xFFCDBF9F),
     );
 
@@ -90,6 +90,38 @@ object Apps {
 }
 
 data class TvInput(val id: String, val label: String)
+
+/** The five apps pinned to the dock, saved on the TV between restarts. */
+object Favorites {
+    const val MAX = 5
+    private const val KEY = "favorites"
+    private val preferred = listOf(
+        "com.netflix.ninja",
+        "com.google.android.youtube.tv",
+        "com.hulu.livingroomplus",
+        "com.disney.disneyplus",
+        "com.amazon.amazonvideo.livingroom",
+        "com.wbd.stream",
+        "com.plexapp.android",
+        "com.spotify.tv.android",
+    )
+
+    private fun prefs(context: Context) = context.getSharedPreferences("deco", Context.MODE_PRIVATE)
+
+    fun load(context: Context): List<String>? =
+        prefs(context).getString(KEY, null)?.split(",")?.filter { it.isNotBlank() }
+
+    fun save(context: Context, packages: List<String>) {
+        prefs(context).edit().putString(KEY, packages.take(MAX).joinToString(",")).apply()
+    }
+
+    fun defaults(apps: List<TvApp>): List<String> {
+        val installed = apps.map { it.packageName }
+        val picked = preferred.filter { it in installed }.toMutableList()
+        for (p in installed) if (picked.size < MAX && p !in picked) picked += p
+        return picked.take(MAX)
+    }
+}
 
 object Actions {
     fun start(context: Context, intent: Intent): Boolean = try {
